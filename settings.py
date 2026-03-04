@@ -6,7 +6,7 @@ load_dotenv()
 
 # Bot settings
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [599081669]  # Список ID администраторов
+ADMIN_IDS = 460344333,334987843  # Список ID администраторов
 MAX_DAILY_SPREADS = 3  # Максимальное количество раскладов в день
 
 # Paths

@@ -15,13 +15,17 @@ from dotenv import load_dotenv
 from io import BytesIO
 import random
 from . import last_messages, bot_monitor
+from settings import ADMIN_IDS as DEFAULT_ADMIN_IDS
 
 # Загружаем переменные окружения
 load_dotenv()
 
 # Получаем список админов из .env и очищаем от скобок
 admin_ids_str = os.getenv('ADMIN_IDS', '').strip('[]')
-ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(',') if id.strip()]
+if admin_ids_str:
+    ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(',') if id.strip()]
+else:
+    ADMIN_IDS = DEFAULT_ADMIN_IDS
 
 # Хранение текущей информации пользователя
 user_data = {}
@@ -83,7 +87,7 @@ async def send_message_and_save_id(message: types.Message, text: str, **kwargs):
     
     return sent_message
 
-def get_main_keyboard():
+def get_main_keyboard(user_id: int | None = None):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.add(
         KeyboardButton("💰 Финансы"),
@@ -104,6 +108,13 @@ def get_main_keyboard():
     keyboard.add(
         KeyboardButton("🎲 Угадай карту")
     )
+
+    logging.info("Main menu for user %s. Admin=%s. ADMIN_IDS=%s", user_id, user_id in ADMIN_IDS, ADMIN_IDS)
+
+    if user_id in ADMIN_IDS:
+        keyboard.add(
+            KeyboardButton("👑 Админ-панель")
+        )
     
     # Проверяем наличие файлов обратной связи
     current_dir = Path(__file__).parent.parent  # Поднимаемся на уровень выше
@@ -176,7 +187,7 @@ async def cmd_start(message: types.Message):
     if CardManager.has_saved_spread(user_id):
         welcome_text += "\n\n🎴 У вас есть сохранённый расклад. Хотите его посмотреть? (Напишите 'да' или выберите новую тему)"
 
-    await send_message_and_save_id(message, welcome_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        await send_message_and_save_id(message, welcome_text, reply_markup=get_main_keyboard(message.from_user.id), parse_mode="Markdown")
 
 async def handle_theme(message: types.Message):
     user_id = message.from_user.id
@@ -254,7 +265,7 @@ async def handle_card_choice(message: types.Message):
             "✨ *Магическая связь прервалась*\n\n"
             "🌙 Пожалуйста, начните новый расклад, выбрав интересующую вас сферу.",
             parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_main_keyboard(message.from_user.id)
         )
         return
     
@@ -343,7 +354,7 @@ async def handle_history_request(message: types.Message):
             "✨ *Магическая связь с картой потеряна*\n\n"
             "🌙 Давайте начнем новое гадание, чтобы восстановить связь с картами Таро.",
             parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
+            reply_markup=get_main_keyboard(message.from_user.id)
         )
         return
 
@@ -394,7 +405,7 @@ async def handle_return_to_themes(message: types.Message):
         "🌟 Карты Таро готовы раскрыть перед вами новые тайны...\n"
         "└ Какая сфера жизни интересует вас сейчас?",
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
 
 async def settings_menu(message: types.Message):
@@ -830,9 +841,12 @@ async def handle_admin_stats(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔️ Доступ запрещен")
         return
-        
-    total_users = len(user_manager.users)
-    daily_subscribers = len(user_manager.get_daily_prediction_subscribers())
+
+    await callback.answer()
+
+    stats = await user_manager.db.get_stats()
+    total_users = stats.get("total_users", 0)
+    daily_subscribers = stats.get("daily_subscribers", 0)
     
     stats_text = (
         "📊 *Статистика бота*\n\n"
@@ -856,6 +870,8 @@ async def handle_return_to_main(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("⛔️ Доступ запрещен")
         return
+
+    await callback.answer()
     
     # Создаем объект message для использования в send_message_and_save_id
     message = callback.message
@@ -873,7 +889,7 @@ async def handle_return_to_main(callback: types.CallbackQuery):
         "✨ *Добро пожаловать в главное меню!*\n\n"
         "Выберите действие из меню ниже:",
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
 
 async def handle_admin_menu_callback(callback: types.CallbackQuery):
@@ -951,7 +967,17 @@ async def handle_return_to_menu(callback: types.CallbackQuery):
         "✨ *Добро пожаловать в главное меню* ✨\n\n"
         "🌟 Выберите действие, которое вас интересует:",
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(message.from_user.id)
+    )
+
+async def show_main_menu(message: types.Message):
+    """Показывает главное меню по команде пользователя."""
+    await send_message_and_save_id(
+        message,
+        "✨ *Добро пожаловать в главное меню* ✨\n\n"
+        "🌟 Выберите действие, которое вас интересует:",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
 
 def register_handlers(dp: Dispatcher, log_decorator=None):
@@ -961,6 +987,8 @@ def register_handlers(dp: Dispatcher, log_decorator=None):
     
     # Основные команды
     dp.register_message_handler(log_decorator(cmd_start), commands=['start'])
+    dp.register_message_handler(log_decorator(show_main_menu), commands=['menu'])
+    dp.register_message_handler(log_decorator(admin_menu), lambda msg: msg.text == "👑 Админ-панель")
     dp.register_message_handler(log_decorator(settings_menu), lambda msg: msg.text == "⚙️ Настройки")
     dp.register_message_handler(log_decorator(handle_theme), 
                               lambda message: any(message.text.endswith(theme) for theme in 
@@ -983,7 +1011,9 @@ def register_handlers(dp: Dispatcher, log_decorator=None):
     dp.register_callback_query_handler(log_decorator(handle_edit_card_start), lambda c: c.data == "edit_card_start")
     dp.register_callback_query_handler(log_decorator(handle_card_selection), lambda c: c.data.startswith("select_card_"))
     dp.register_callback_query_handler(log_decorator(handle_field_selection), lambda c: c.data.startswith("edit_field_"))
+    dp.register_callback_query_handler(log_decorator(handle_admin_stats), lambda c: c.data == "admin_stats")
     dp.register_callback_query_handler(log_decorator(handle_admin_menu_callback), lambda c: c.data == "admin_menu")
+    dp.register_callback_query_handler(log_decorator(handle_return_to_main), lambda c: c.data == "return_to_main")
     
     # Обработчик возврата к главному меню
     dp.register_message_handler(log_decorator(handle_return_to_themes), lambda msg: msg.text == "🔮 Новый расклад")

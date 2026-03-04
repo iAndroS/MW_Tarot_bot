@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/bin/sh
 
 # Запуск health check сервера в фоновом режиме
 python health_check.py &
 
 # Запуск основного бота
-exec python bot.py 
+exec python bot.py

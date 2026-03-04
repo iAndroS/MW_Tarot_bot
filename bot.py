@@ -68,7 +68,7 @@ def log_command(monitor):
 
 class BotManager:
     def __init__(self):
-        self.bot = Bot(token=BOT_TOKEN)
+        self.bot = Bot(token=BOT_TOKEN, validate_token=False)
         self.storage = MemoryStorage()
         self.dp = Dispatcher(self.bot, storage=self.storage)
         self.daily_prediction_manager = DailyPredictionManager(self.bot)

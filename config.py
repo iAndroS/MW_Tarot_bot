@@ -1,6 +1,9 @@
 import os
 
-BOT_TOKEN = "8037068804:AAEpuxh5nzlmKe8E5kIFQqLd46OtP7katss"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+if not BOT_TOKEN:
+	raise RuntimeError("BOT_TOKEN is not set. Add it to .env or environment variables.")
 
 # Пути к файлам данных
 TAROT_DECK_FILE = "data/tarot_deck.json"

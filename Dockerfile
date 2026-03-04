@@ -37,6 +37,10 @@ RUN groupadd -r botuser && useradd -r -g botuser botuser \
 # Копирование проекта
 COPY --chown=botuser:botuser . .
 
+# Убедиться, что скрипт запуска исполняемый
+RUN sed -i 's/\r$//' /app/start.sh \
+    && chmod +x /app/start.sh
+
 # Установка переменных окружения
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -50,4 +54,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8080/health')" || exit 1
 
 # Запуск бота через скрипт start.sh
-CMD ["./start.sh"] 
+CMD ["sh", "./start.sh"]
