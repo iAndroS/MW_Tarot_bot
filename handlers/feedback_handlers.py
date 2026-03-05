@@ -1,7 +1,8 @@
-from aiogram import types
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.dispatcher.filters import Text
+from aiogram import types, Dispatcher
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import Command, StateFilter
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils.feedback import FeedbackManager
 import logging
 
@@ -15,10 +16,11 @@ class FeedbackState(StatesGroup):
 async def cmd_feedback(message: types.Message):
     """Начало процесса отправки обратной связи."""
     logging.info(f"Запущен процесс обратной связи пользователем {message.from_user.id}")
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton("🐞 Сообщить об ошибке", callback_data="feedback_bug"),
-        types.InlineKeyboardButton("💡 Предложить идею", callback_data="feedback_suggestion")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🐞 Сообщить об ошибке", callback_data="feedback_bug")],
+            [InlineKeyboardButton(text="💡 Предложить идею", callback_data="feedback_suggestion")]
+        ]
     )
     await message.reply(
         "📝 *Обратная связь*\n\n"
@@ -51,7 +53,7 @@ async def handle_feedback_type(callback: types.CallbackQuery, state: FSMContext)
         text,
         parse_mode="Markdown"
     )
-    await FeedbackState.waiting_for_message.set()
+    await state.set_state(FeedbackState.waiting_for_message)
 
 async def handle_feedback_message(message: types.Message, state: FSMContext):
     """Обработка текста обратной связи."""
@@ -73,19 +75,17 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
         response = "❌ Извините, произошла ошибка при сохранении обратной связи. Попробуйте позже."
     
     await message.reply(response)
-    await state.finish()
+    await state.clear()
 
 def register_feedback_handlers(dp):
     """Регистрация обработчиков обратной связи."""
-    dp.register_message_handler(cmd_feedback, commands=['feedback'])
-    dp.register_message_handler(cmd_feedback, lambda m: m.text == "📝 Обратная связь")
-    dp.register_callback_query_handler(
+    dp.message.register(cmd_feedback, Command(commands=['feedback']))
+    dp.message.register(cmd_feedback, lambda m: m.text == "📝 Обратная связь")
+    dp.callback_query.register(
         handle_feedback_type,
-        lambda c: c.data.startswith('feedback_'),
-        state="*"
+        lambda c: c.data.startswith('feedback_')
     )
-    dp.register_message_handler(
+    dp.message.register(
         handle_feedback_message,
-        state=FeedbackState.waiting_for_message,
-        content_types=types.ContentTypes.TEXT
-    ) 
+        StateFilter(FeedbackState.waiting_for_message)
+    )

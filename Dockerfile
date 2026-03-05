@@ -4,6 +4,7 @@ FROM python:3.11-slim as builder
 RUN apt-get update && apt-get install -y \
     gcc \
     python3-dev \
+    libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка рабочей директории
@@ -15,10 +16,17 @@ COPY requirements.txt .
 # Установка зависимостей Python в виртуальное окружение
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Финальный этап
 FROM python:3.11-slim
+
+# Установка runtime зависимостей (curl для healthcheck)
+RUN apt-get update && apt-get install -y \
+    libffi8 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Копирование виртуального окружения из builder
 COPY --from=builder /opt/venv /opt/venv
@@ -32,10 +40,17 @@ RUN groupadd -r botuser && useradd -r -g botuser botuser \
     && mkdir -p /app/logs/feedback \
     && mkdir -p /app/images/tarot \
     && mkdir -p /app/data \
+    && mkdir -p /app/tests \
     && chown -R botuser:botuser /app
 
-# Копирование проекта
-COPY --chown=botuser:botuser . .
+# Копирование файлов проекта
+COPY --chown=botuser:botuser *.py *.sh *.txt *.ini ./
+COPY --chown=botuser:botuser data/ ./data/
+COPY --chown=botuser:botuser games/ ./games/
+COPY --chown=botuser:botuser handlers/ ./handlers/
+COPY --chown=botuser:botuser utils/ ./utils/
+COPY --chown=botuser:botuser tests/ ./tests/
+
 
 # Убедиться, что скрипт запуска исполняемый
 RUN sed -i 's/\r$//' /app/start.sh \
@@ -44,14 +59,15 @@ RUN sed -i 's/\r$//' /app/start.sh \
 # Установка переменных окружения
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    TZ=Europe/Moscow
 
 # Переключение на непривилегированного пользователя
 USER botuser
 
-# Проверка здоровья
+# Проверка здоровья через curl
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8080/health')" || exit 1
+    CMD curl -fs http://localhost:8080/health || exit 1
 
 # Запуск бота через скрипт start.sh
 CMD ["sh", "./start.sh"]

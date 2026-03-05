@@ -1,19 +1,35 @@
-from aiogram import Bot, Dispatcher, executor, types
+import asyncio
+import logging
+import os
+import time
+from pathlib import Path
+from functools import wraps
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+
 from config import BOT_TOKEN
 from handlers import register_handlers, set_monitor, register_feedback_handlers
-import logging
-import asyncio
 from utils.daily_predictions import DailyPredictionManager
 from utils.database import Database
 from utils.user_manager import UserManager
 from utils.card_manager import CardManager
 from utils.monitoring import BotMonitor
-from aiogram.types import Message
-from functools import wraps
-import time
-import os
-from pathlib import Path
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
+
+def extract_command(update):
+    """Извлекает команду из обновления (CallbackQuery или Message)."""
+    if isinstance(update, types.CallbackQuery):
+        # Для callback query возвращаем data
+        cmd = update.data if update.data else "callback_empty"
+        return cmd
+    # Message - в aiogram 3.x нет get_command(), используем text
+    text = update.text or ""
+    parts = text.split()
+    result = parts[0] if parts else (text if text.startswith('/') else text)
+    return result
+
 
 def log_command(monitor):
     """Декоратор для логирования команд с измерением времени выполнения."""
@@ -21,21 +37,18 @@ def log_command(monitor):
         @wraps(func)
         async def wrapper(update, *args, **kwargs):
             start_time = time.time()
+            # Проверяем наличие from_user для защиты от AttributeError
+            if not update.from_user:
+                logging.warning("Update without from_user received")
+                return None
+            user_id = update.from_user.id
             try:
                 result = await func(update, *args, **kwargs)
                 end_time = time.time()
                 
-                # Определяем тип обновления и получаем нужные данные
-                if isinstance(update, types.CallbackQuery):
-                    user_id = update.from_user.id
-                    command = update.data
-                else:  # Message
-                    user_id = update.from_user.id
-                    command = update.get_command() or update.text
-                
                 monitor.log_command(
                     user_id,
-                    command,
+                    extract_command(update),
                     True,
                     end_time - start_time
                 )
@@ -43,17 +56,9 @@ def log_command(monitor):
             except Exception as e:
                 end_time = time.time()
                 
-                # Определяем тип обновления для логирования ошибки
-                if isinstance(update, types.CallbackQuery):
-                    user_id = update.from_user.id
-                    command = update.data
-                else:  # Message
-                    user_id = update.from_user.id
-                    command = update.get_command() or update.text
-                
                 monitor.log_command(
                     user_id,
-                    command,
+                    extract_command(update),
                     False,
                     end_time - start_time
                 )
@@ -68,30 +73,41 @@ def log_command(monitor):
 
 class BotManager:
     def __init__(self):
-        self.bot = Bot(token=BOT_TOKEN, validate_token=False)
+        self.bot = Bot(
+            token=BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
+        )
         self.storage = MemoryStorage()
-        self.dp = Dispatcher(self.bot, storage=self.storage)
+        self.dp = Dispatcher(storage=self.storage)
         self.daily_prediction_manager = DailyPredictionManager(self.bot)
         self.db = Database()
         self._cleanup_tasks = []
         
         # Инициализируем монитор
         self.monitor = BotMonitor()
+        logging.info("BotMonitor initialized")
         
-        # Устанавливаем глобальный монитор в handlers
-        from handlers import set_monitor
+        # Устанавливаем глобальный монитор в handlers (set_monitor уже импортирован)
         set_monitor(self.monitor)
+        logging.info("Monitor set in handlers module")
     
     async def on_startup(self, dp: Dispatcher):
         """Действия при запуске бота."""
+        self.monitor.logger.info("=" * 50)
         self.monitor.logger.info("Запуск бота")
+        self.monitor.logger.info(f"Python version: {os.sys.version}")
+        self.monitor.logger.info(f"Working directory: {os.getcwd()}")
         
         # Инициализируем менеджеры
+        self.monitor.logger.info("Initializing UserManager...")
         self.user_manager = UserManager()
+        self.monitor.logger.info("Initializing CardManager...")
         self.card_manager = CardManager()
         
         # Инициализируем карты
+        self.monitor.logger.info("Initializing cards...")
         await self.card_manager.initialize()
+        self.monitor.logger.info("Cards initialized successfully")
         
         # Запускаем периодическую очистку кэша
         await self.user_manager.cache.start_cleanup()
@@ -144,15 +160,19 @@ class BotManager:
             except asyncio.CancelledError:
                 pass
     
+    async def run_async(self):
+        """Асинхронный запуск бота."""
+        try:
+            await self.on_startup(self.dp)
+            await self.dp.start_polling(self.bot, skip_updates=True)
+        finally:
+            await self.on_shutdown(self.dp)
+            await self.bot.session.close()
+
     def run(self):
         """Запуск бота."""
-        executor.start_polling(
-            self.dp,
-            skip_updates=True,
-            on_startup=self.on_startup,
-            on_shutdown=self.on_shutdown
-        )
+        asyncio.run(self.run_async())
 
 if __name__ == '__main__':
     bot_manager = BotManager()
-    bot_manager.run() 
+    bot_manager.run()

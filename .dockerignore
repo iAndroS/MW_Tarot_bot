@@ -8,7 +8,10 @@ __pycache__
 env/
 venv/
 *.log
-logs/
 .DS_Store
 .idea/
-.vscode/ 
+.vscode/
+.pytest_cache/
+.coverage
+htmlcov/
+.env

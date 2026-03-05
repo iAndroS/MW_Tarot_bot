@@ -29,13 +29,14 @@ class GuessCardGame:
             "options": options
         }
         
-        # Создаем клавиатуру
-        keyboard = InlineKeyboardMarkup(row_width=1)
+        # Создаем клавиатуру для aiogram 3.x
+        keyboard_rows = []
         for i, card in enumerate(options):
-            keyboard.add(InlineKeyboardButton(
-                f"🎴 Карта {i + 1}",
+            keyboard_rows.append([InlineKeyboardButton(
+                text=f"🎴 Карта {i + 1}",
                 callback_data=f"guess_{i}"
-            ))
+            )])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
         
         return target_card, options, keyboard
 
@@ -56,15 +57,16 @@ class GuessCardGame:
 
 def get_try_again_keyboard() -> InlineKeyboardMarkup:
     """Возвращает клавиатуру для повторной попытки."""
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton(
-            "🎲 Попробовать еще раз",
-            callback_data="try_again"
-        ),
-        InlineKeyboardButton(
-            "🔙 Вернуться в меню",
-            callback_data="return_to_menu"
-        )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🎲 Попробовать еще раз",
+                callback_data="try_again"
+            )],
+            [InlineKeyboardButton(
+                text="🔙 Вернуться в меню",
+                callback_data="return_to_menu"
+            )]
+        ]
     )
     return keyboard 

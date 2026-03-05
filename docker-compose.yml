@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bot:
     build: 
@@ -11,32 +9,37 @@ services:
       - ./logs:/app/logs:rw
       - ./images/tarot:/app/images/tarot:ro
       - ./data:/app/data:rw
+      - ./tests:/app/tests:ro
     env_file:
       - .env
     environment:
       - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
     ports:
       - "8080:8080"
     deploy:
       resources:
         limits:
           memory: 512M
+          cpus: '1.0'
         reservations:
           memory: 128M
+          cpus: '0.25'
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+        labels: "service_name"
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health')"]
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 10s
     networks:
       - bot_network
 
 networks:
   bot_network:
-    driver: bridge 
+    driver: bridge

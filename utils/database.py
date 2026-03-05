@@ -16,16 +16,30 @@ class Database:
 
     def __init__(self):
         if not self._initialized:
-            self._lock = asyncio.Lock()
             self.db_path = Path('data/tarot.db')
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = None
+            self._lock = asyncio.Lock()  # Lock for thread-safe database operations
             self._initialize_database()
             self._initialized = True
 
+    def __enter__(self):
+        """Вход в контекстный менеджер."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Выход из контекстного менеджера - закрывает соединение."""
+        if self._connection:
+            self._connection.close()
+            self._connection = None
+        return False
+
     def _initialize_database(self):
         """Инициализация базы данных и создание таблиц."""
+        logging.info(f"Попытка инициализации БД: {self.db_path}, существует: {self.db_path.exists()}")
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                logging.info("Соединение с БД установлено")
                 cursor = conn.cursor()
                 
                 # Создаем таблицу пользователей
@@ -79,19 +93,21 @@ class Database:
                 
                 conn.commit()
                 logging.info("База данных успешно инициализирована")
-                
+            
         except Exception as e:
             logging.error(f"Ошибка при инициализации базы данных: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
             raise
 
     async def migrate_data(self):
         """Миграция данных из JSON файлов в SQLite."""
-        try:
-            # Миграция данных пользователей
-            users_path = Path('data/users.json')
-            if users_path.exists():
-                async with self._lock:
-                    with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                # Миграция данных пользователей
+                users_path = Path('data/users.json')
+                if users_path.exists():
+                    with sqlite3.connect(self.db_path, timeout=30) as conn:
                         cursor = conn.cursor()
                         with open(users_path) as f:
                             users_data = json.load(f)
@@ -112,11 +128,10 @@ class Database:
                         conn.commit()
                         logging.info("Данные пользователей успешно мигрированы")
 
-            # Миграция данных карт
-            cards_path = Path('data/tarot_deck.json')
-            if cards_path.exists():
-                async with self._lock:
-                    with sqlite3.connect(self.db_path) as conn:
+                # Миграция данных карт
+                cards_path = Path('data/tarot_deck.json')
+                if cards_path.exists():
+                    with sqlite3.connect(self.db_path, timeout=30) as conn:
                         cursor = conn.cursor()
                         with open(cards_path, 'r', encoding='utf-8') as f:
                             deck_data = json.load(f)
@@ -226,16 +241,15 @@ class Database:
                             
                         conn.commit()
                         logging.info("Данные карт успешно мигрированы")
-
-        except Exception as e:
-            logging.error(f"Ошибка при миграции данных: {e}")
-            raise
+            except Exception as e:
+                logging.error(f"Ошибка при миграции данных: {e}")
+                raise
 
     async def get_user(self, user_id: int) -> Optional[Dict]:
         """Получение данных пользователя."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
                     row = cursor.fetchone()
@@ -249,15 +263,15 @@ class Database:
                             'daily_prediction': bool(row[5])
                         }
                     return None
-        except Exception as e:
-            logging.error(f"Ошибка при получении данных пользователя {user_id}: {e}")
-            return None
+            except Exception as e:
+                logging.error(f"Ошибка при получении данных пользователя {user_id}: {e}")
+                return None
 
     async def update_user(self, user_id: int, **kwargs) -> bool:
         """Обновляет данные пользователя в базе данных."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     
                     # Формируем SET часть запроса динамически
@@ -295,16 +309,15 @@ class Database:
                     
                     conn.commit()
                     return True
-                    
-        except Exception as e:
-            logging.error(f"Ошибка при обновлении пользователя {user_id}: {e}")
-            return False
+            except Exception as e:
+                logging.error(f"Ошибка при обновлении пользователя {user_id}: {e}")
+                return False
 
     async def get_card(self, name_en: str) -> Optional[Dict]:
         """Получение информации о карте."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     cursor.execute('SELECT * FROM cards WHERE name_en = ?', (name_en,))
                     row = cursor.fetchone()
@@ -323,27 +336,27 @@ class Database:
                             'Подсказка': row[11]
                         }
                     return None
-        except Exception as e:
-            logging.error(f"Ошибка при получении карты {name_en}: {e}")
-            return None
+            except Exception as e:
+                logging.error(f"Ошибка при получении карты {name_en}: {e}")
+                return None
 
     async def get_daily_subscribers(self) -> List[int]:
         """Получение списка подписчиков на ежедневные предсказания."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     cursor.execute('SELECT user_id FROM users WHERE daily_prediction = TRUE')
                     return [row[0] for row in cursor.fetchall()]
-        except Exception as e:
-            logging.error(f"Ошибка при получении списка подписчиков: {e}")
-            return [] 
+            except Exception as e:
+                logging.error(f"Ошибка при получении списка подписчиков: {e}")
+                return [] 
 
     async def save_spread(self, user_id: int, theme: str, cards: str) -> bool:
         """Сохранение расклада в базу данных."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
                         INSERT INTO spreads (user_id, theme, cards)
@@ -351,15 +364,15 @@ class Database:
                     ''', (user_id, theme, cards))
                     conn.commit()
                     return True
-        except Exception as e:
-            logging.error(f"Ошибка при сохранении расклада: {e}")
-            return False
+            except Exception as e:
+                logging.error(f"Ошибка при сохранении расклада: {e}")
+                return False
 
     async def get_last_spread(self, user_id: int) -> Optional[Dict]:
         """Получение последнего расклада пользователя."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
                         SELECT theme, cards, created_at
@@ -376,15 +389,15 @@ class Database:
                             'created_at': row[2]
                         }
                     return None
-        except Exception as e:
-            logging.error(f"Ошибка при получении последнего расклада: {e}")
-            return None
+            except Exception as e:
+                logging.error(f"Ошибка при получении последнего расклада: {e}")
+                return None
 
     async def get_user_spreads(self, user_id: int, limit: int = 10) -> List[Dict]:
         """Получение истории раскладов пользователя."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     cursor.execute('''
                         SELECT theme, cards, created_at
@@ -398,15 +411,15 @@ class Database:
                         'cards': json.loads(row[1]),
                         'created_at': row[2]
                     } for row in cursor.fetchall()]
-        except Exception as e:
-            logging.error(f"Ошибка при получении истории раскладов: {e}")
-            return []
+            except Exception as e:
+                logging.error(f"Ошибка при получении истории раскладов: {e}")
+                return []
 
     async def get_stats(self) -> Dict:
         """Получение статистики использования бота."""
-        try:
-            async with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+        async with self._lock:
+            try:
+                with sqlite3.connect(self.db_path, timeout=30) as conn:
                     cursor = conn.cursor()
                     stats = {}
                     
@@ -440,6 +453,6 @@ class Database:
                     stats['popular_themes'] = dict(cursor.fetchall())
                     
                     return stats
-        except Exception as e:
-            logging.error(f"Ошибка при получении статистики: {e}")
-            return {} 
+            except Exception as e:
+                logging.error(f"Ошибка при получении статистики: {e}")
+                return {}

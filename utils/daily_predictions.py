@@ -2,11 +2,11 @@ import asyncio
 from datetime import datetime, time, timedelta
 import logging
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 from utils.user_manager import UserManager
 from utils.card_manager import CardManager
 from utils.image_manager import ImageManager
 from handlers import last_messages
-from io import BytesIO
 import pytz
 import random
 
@@ -45,8 +45,7 @@ class DailyPredictionManager:
                         # Получаем оптимизированное изображение через ImageManager
                         image_bytes = await self.image_manager.get_image(card['en'])
                         if image_bytes:
-                            photo = BytesIO(image_bytes)
-                            photo.name = f"{card['en']}.jpg"
+                            photo = BufferedInputFile(image_bytes, filename=f"{card['en']}.jpg")
                             new_message = await self.bot.send_photo(
                                 user_id,
                                 photo=photo,

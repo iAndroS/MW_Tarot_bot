@@ -165,6 +165,13 @@ class BotMonitor:
                 "users_affected": set()
             }
         
+        # Гарантируем что users_affected всегда set (после десериализации может стать list)
+        affected = self.stats["errors"][error_type]["users_affected"]
+        if isinstance(affected, list):
+            self.stats["errors"][error_type]["users_affected"] = set(affected)
+        elif not isinstance(affected, set):
+            self.stats["errors"][error_type]["users_affected"] = set()
+        
         self.stats["errors"][error_type]["count"] += 1
         self.stats["errors"][error_type]["last_occurrence"] = datetime.now().isoformat()
         if user_id:

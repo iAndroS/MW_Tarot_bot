@@ -1,9 +1,10 @@
 from aiogram import Dispatcher, types, Bot
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.exceptions import MessageNotModified
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 import os
 from pathlib import Path
-from config import IMAGES_PATH
+from settings import IMAGES_PATH, ADMIN_IDS
 from utils.card_manager import CardManager
 from utils.user_manager import UserManager
 from utils.image_manager import ImageManager
@@ -11,21 +12,45 @@ import logging
 from games.guess_card import GuessCardGame, get_try_again_keyboard
 import asyncio
 from utils.admin_card_editor import AdminCardEditor
-from dotenv import load_dotenv
 from io import BytesIO
 import random
 from . import last_messages, bot_monitor
-from settings import ADMIN_IDS as DEFAULT_ADMIN_IDS
 
-# Загружаем переменные окружения
-load_dotenv()
 
-# Получаем список админов из .env и очищаем от скобок
-admin_ids_str = os.getenv('ADMIN_IDS', '').strip('[]')
-if admin_ids_str:
-    ADMIN_IDS = [int(id.strip()) for id in admin_ids_str.split(',') if id.strip()]
-else:
-    ADMIN_IDS = DEFAULT_ADMIN_IDS
+class SimpleMessage:
+    """Класс-обёртка для безопасной работы с callback.message."""
+
+    def __init__(self, callback):
+        self.chat = callback.message.chat if callback.message else None
+        self.message_id = callback.message.message_id if callback.message else None
+        self.from_user = callback.from_user if callback.from_user else None
+        self.bot = callback.bot if callback.bot else None
+        logging.debug(f"SimpleMessage created: chat={self.chat}, message_id={self.message_id}, user={self.from_user}")
+
+    async def answer(self, text: str, **kwargs):
+        """Отправляет сообщение в чат через bot."""
+        if not self.bot:
+            logging.error("SimpleMessage.answer: bot is None")
+            raise RuntimeError("Bot instance is not available")
+        if not self.chat:
+            logging.error("SimpleMessage.answer: chat is None")
+            raise RuntimeError("Chat is not available")
+        
+        logging.debug(f"SimpleMessage.answer: sending message to chat {self.chat.id}")
+        return await self.bot.send_message(self.chat.id, text=text, **kwargs)
+
+    async def answer_photo(self, photo, **kwargs):
+        """Отправляет фото в чат через bot."""
+        if not self.bot:
+            logging.error("SimpleMessage.answer_photo: bot is None")
+            raise RuntimeError("Bot instance is not available")
+        if not self.chat:
+            logging.error("SimpleMessage.answer_photo: chat is None")
+            raise RuntimeError("Chat is not available")
+        
+        logging.debug(f"SimpleMessage.answer_photo: sending photo to chat {self.chat.id}")
+        return await self.bot.send_photo(self.chat.id, photo=photo, **kwargs)
+
 
 # Хранение текущей информации пользователя
 user_data = {}
@@ -72,9 +97,18 @@ async def delete_previous_messages(chat_id: int, user_message: types.Message, ne
 async def send_message_and_save_id(message: types.Message, text: str, **kwargs):
     """Отправляет сообщение и сохраняет его ID, удаляя предыдущие сообщения."""
     chat_id = message.chat.id
+    logging.debug(f"send_message_and_save_id: chat_id={chat_id}, message type={type(message).__name__}")
     
     # Отправляем новое сообщение
-    sent_message = await message.answer(text, **kwargs)
+    try:
+        if hasattr(message, 'answer'):
+            sent_message = await message.answer(text, **kwargs)
+        else:
+            logging.error(f"message object has no 'answer' method: {type(message)}")
+            raise RuntimeError(f"Message object has no answer method: {type(message)}")
+    except Exception as e:
+        logging.error(f"Error in send_message_and_save_id: {e}")
+        raise
     
     # Удаляем предыдущие сообщения
     await delete_previous_messages(chat_id, message)
@@ -88,33 +122,21 @@ async def send_message_and_save_id(message: types.Message, text: str, **kwargs):
     return sent_message
 
 def get_main_keyboard(user_id: int | None = None):
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(
-        KeyboardButton("💰 Финансы"),
-        KeyboardButton("❤️ Отношения")
-    )
-    keyboard.add(
-        KeyboardButton("🌅 Карта дня"),
-        KeyboardButton("💼 Карьера")
-    )
-    keyboard.add(
-        KeyboardButton("🌙 На месяц"),
-        KeyboardButton("🌟 На неделю")
-    )
-    keyboard.add(
-        KeyboardButton("💫 Подсказка"),
-        KeyboardButton("⚙️ Настройки")
-    )
-    keyboard.add(
-        KeyboardButton("🎲 Угадай карту")
-    )
+    # Формируем клавиатуру для aiogram 3.x
+    keyboard_rows = [
+        [KeyboardButton(text="💰 Финансы"), KeyboardButton(text="❤️ Отношения")],
+        [KeyboardButton(text="🌅 Карта дня"), KeyboardButton(text="💼 Карьера")],
+        [KeyboardButton(text="🌙 На месяц"), KeyboardButton(text="🌟 На неделю")],
+        [KeyboardButton(text="💫 Подсказка"), KeyboardButton(text="⚙️ Настройки")],
+        [KeyboardButton(text="🎲 Угадай карту")],
+    ]
 
-    logging.info("Main menu for user %s. Admin=%s. ADMIN_IDS=%s", user_id, user_id in ADMIN_IDS, ADMIN_IDS)
+    # Логируем только факт наличия прав админа (без конкретных ID)
+    is_admin = user_id in ADMIN_IDS
+    logging.info("Main menu for user %s. Admin=%s", user_id, is_admin)
 
     if user_id in ADMIN_IDS:
-        keyboard.add(
-            KeyboardButton("👑 Админ-панель")
-        )
+        keyboard_rows.append([KeyboardButton(text="👑 Админ-панель")])
     
     # Проверяем наличие файлов обратной связи
     current_dir = Path(__file__).parent.parent  # Поднимаемся на уровень выше
@@ -127,13 +149,11 @@ def get_main_keyboard(user_id: int | None = None):
     
     if feedback_path.exists() and handlers_path.exists():
         logging.info("Добавляю кнопку обратной связи")
-        keyboard.add(
-            KeyboardButton("📝 Обратная связь")
-        )
+        keyboard_rows.append([KeyboardButton(text="📝 Обратная связь")])
     else:
         logging.info("Кнопка обратной связи не добавлена: файлы не найдены")
     
-    return keyboard
+    return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
 async def delete_user_message(message: types.Message):
     """Немедленно удаляет сообщение пользователя."""
@@ -186,8 +206,9 @@ async def cmd_start(message: types.Message):
     # Добавляем информацию о предыдущем раскладе, если он есть
     if CardManager.has_saved_spread(user_id):
         welcome_text += "\n\n🎴 У вас есть сохранённый расклад. Хотите его посмотреть? (Напишите 'да' или выберите новую тему)"
-
-        await send_message_and_save_id(message, welcome_text, reply_markup=get_main_keyboard(message.from_user.id), parse_mode="Markdown")
+    
+    # Всегда отправляем приветственное сообщение
+    await send_message_and_save_id(message, welcome_text, reply_markup=get_main_keyboard(message.from_user.id), parse_mode="Markdown")
 
 async def handle_theme(message: types.Message):
     user_id = message.from_user.id
@@ -223,11 +244,10 @@ async def handle_theme(message: types.Message):
     await user_manager.increment_spreads(user_id)
     await card_manager.save_spread(str(user_id), actual_theme, cards)
     
-    cards_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    cards_keyboard.add(
-        KeyboardButton("🎴"),
-        KeyboardButton("🎴"),
-        KeyboardButton("🎴")
+    cards_keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🎴"), KeyboardButton(text="🎴"), KeyboardButton(text="🎴")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
     )
     
     await send_message_and_save_id(
@@ -285,9 +305,9 @@ async def handle_card_choice(message: types.Message):
     user_data[user_id]["current_card"] = card_info
     
     # Создаем клавиатуру для дополнительных действий
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(
-        KeyboardButton("🔮 Новый расклад")
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔮 Новый расклад")]],
+        resize_keyboard=True
     )
     
     # Случайные магические окончания
@@ -301,10 +321,19 @@ async def handle_card_choice(message: types.Message):
     ]
     
     # Формируем сообщение с предсказанием
+    # Используем get() для безопасного доступа к полям карты
+    card_meaning = card_info.get(theme)
+    if not card_meaning:
+        # Fallback: если тема не найдена, используем "Карта на сегодня" или "meaning"
+        card_meaning = card_info.get('Карта на сегодня') or card_info.get('meaning',
+            'Карта не может дать точный ответ на этот вопрос сегодня. '
+            'Прислушайтесь к своей интуиции...')
+        logging.warning(f"Theme '{theme}' not found for card {card_info.get('ru', 'Unknown')}, using fallback")
+    
     message_text = (
         f"✨ *Ваше предсказание для сферы {theme}* ✨\n\n"
         f"🎴 *{card_info['ru']}*\n\n"
-        f"📜 *Значение карты:*\n└ _{card_info[theme]}_\n\n"
+        f"📜 *Значение карты:*\n└ _{card_meaning}_\n\n"
         f"{random.choice(endings)}"
     )
     
@@ -315,8 +344,7 @@ async def handle_card_choice(message: types.Message):
             # Получаем оптимизированное изображение через ImageManager
             image_bytes = await image_manager.get_image(card_info['en'])
             if image_bytes:
-                photo = BytesIO(image_bytes)
-                photo.name = f"{card_info['en']}.jpg"
+                photo = BufferedInputFile(image_bytes, filename=f"{card_info['en']}.jpg")
                 await send_photo_and_save_id(
                     message,
                     photo=photo,
@@ -361,8 +389,10 @@ async def handle_history_request(message: types.Message):
     card_info = user_data[user_id]["current_card"]
     history = card_info.get("history", "История этой карты окутана тайной...")
     
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add(KeyboardButton("🔮 Новый расклад"))
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="🔮 Новый расклад")]],
+        resize_keyboard=True
+    )
     
     history_text = (
         f"📜 *История карты {card_info['ru']}* 📜\n\n"
@@ -372,13 +402,13 @@ async def handle_history_request(message: types.Message):
         "🔮 Хотите сделать новый расклад?"
     )
     
-    if user_manager.get_user(int(user_id))["show_images"]:
+    user = await user_manager.get_user(int(user_id))
+    if user["show_images"]:
         try:
             # Получаем оптимизированное изображение через ImageManager
             image_bytes = await image_manager.get_image(card_info['en'])
             if image_bytes:
-                photo = BytesIO(image_bytes)
-                photo.name = f"{card_info['en']}.jpg"
+                photo = BufferedInputFile(image_bytes, filename=f"{card_info['en']}.jpg")
                 await send_photo_and_save_id(
                     message,
                     photo=photo,
@@ -412,18 +442,17 @@ async def settings_menu(message: types.Message):
     """Показывает меню настроек."""
     user = await user_manager.get_user(message.from_user.id)
     
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton(
-            f"{'🌞' if user['theme'] == 'light' else '🌙'} Тема: {'Светлая' if user['theme'] == 'light' else 'Тёмная'}",
-            callback_data="toggle_theme"
-        )
-    )
-    keyboard.add(
-        InlineKeyboardButton(
-            "🔄 Сбросить настройки",
-            callback_data="reset_settings"
-        )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"{'🌞' if user['theme'] == 'light' else '🌙'} Тема: {'Светлая' if user['theme'] == 'light' else 'Тёмная'}",
+                callback_data="toggle_theme"
+            )],
+            [InlineKeyboardButton(
+                text="🔄 Сбросить настройки",
+                callback_data="reset_settings"
+            )]
+        ]
     )
     
     await message.reply(
@@ -473,18 +502,17 @@ async def handle_settings_callback(callback: types.CallbackQuery):
         )
     
     # Обновляем клавиатуру
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(
-        InlineKeyboardButton(
-            f"{theme_emoji} Тема: {theme_text}",
-            callback_data="toggle_theme"
-        )
-    )
-    keyboard.add(
-        InlineKeyboardButton(
-            "🔄 Сбросить настройки",
-            callback_data="reset_settings"
-        )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"{theme_emoji} Тема: {theme_text}",
+                callback_data="toggle_theme"
+            )],
+            [InlineKeyboardButton(
+                text="🔄 Сбросить настройки",
+                callback_data="reset_settings"
+            )]
+        ]
     )
     
     try:
@@ -493,7 +521,7 @@ async def handle_settings_callback(callback: types.CallbackQuery):
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
-    except MessageNotModified:
+    except TelegramBadRequest:
         logging.warning("Сообщение не изменилось, пропускаем обновление")
         pass
 
@@ -528,7 +556,7 @@ async def send_daily_prediction(bot: Bot):
                 if os.path.exists(image_path):
                     sent_message = await bot.send_photo(
                         user_id,
-                        photo=InputFile(image_path),
+                        photo=FSInputFile(image_path),
                         caption=message_text,
                         parse_mode="Markdown"
                     )
@@ -574,8 +602,7 @@ async def handle_guess_card_game(message: types.Message):
         # Получаем оптимизированное изображение через ImageManager
         image_bytes = await image_manager.get_image(target_card['en'])
         if image_bytes:
-            photo = BytesIO(image_bytes)
-            photo.name = f"{target_card['en']}.jpg"
+            photo = BufferedInputFile(image_bytes, filename=f"{target_card['en']}.jpg")
             await send_photo_and_save_id(
                 message,
                 photo=photo,
@@ -601,17 +628,19 @@ async def handle_guess_card_game(message: types.Message):
 
 async def handle_guess_callback(callback: types.CallbackQuery):
     """Обрабатывает выбор карты в игре."""
+    logging.info(f"handle_guess_callback: user={callback.from_user.id}, data={callback.data}")
+    
     # Получаем индекс выбранной карты
     data_parts = callback.data.split('_')
     selected_index = int(data_parts[1])
     
     # Проверяем угадал ли пользователь
     is_correct, target_card, selected_card = guess_game.check_guess(callback.from_user.id, selected_index)
-    
+    logging.info(f"handle_guess_callback: is_correct={is_correct}, target={target_card['ru'] if target_card else None}")
+
     # Создаем объект message из callback.message
-    message = callback.message
-    message.from_user = callback.from_user
-    
+    message = SimpleMessage(callback)
+
     if is_correct:
         success_text = (
             "🎉 *Поздравляем! Вы угадали!* 🎉\n\n"
@@ -620,12 +649,6 @@ async def handle_guess_callback(callback: types.CallbackQuery):
             f"└ _{target_card.get('history', 'История этой карты окутана тайной...')}_\n\n"
             "💫 Продолжайте развивать свой дар..."
         )
-        
-        # Сохраняем текущее сообщение как предыдущее
-        chat_id = message.chat.id
-        last_messages[chat_id] = {
-            "bot": message.message_id
-        }
         
         # Отправляем новое сообщение
         await send_message_and_save_id(
@@ -644,18 +667,11 @@ async def handle_guess_callback(callback: types.CallbackQuery):
             "└ Попробуете еще раз?"
         )
         
-        # Сохраняем текущее сообщение как предыдущее
-        chat_id = message.chat.id
-        last_messages[chat_id] = {
-            "bot": message.message_id
-        }
-        
         try:
             # Получаем оптимизированное изображение через ImageManager
             image_bytes = await image_manager.get_image(selected_card['en'])
             if image_bytes:
-                photo = BytesIO(image_bytes)
-                photo.name = f"{selected_card['en']}.jpg"
+                photo = BufferedInputFile(image_bytes, filename=f"{selected_card['en']}.jpg")
                 await send_photo_and_save_id(
                     message,
                     photo=photo,
@@ -684,11 +700,12 @@ async def admin_menu(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         return
         
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton("📝 Редактировать карту", callback_data="edit_card_start"),
-        InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
-        InlineKeyboardButton("🔙 Вернуться", callback_data="return_to_main")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Редактировать карту", callback_data="edit_card_start")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🔙 Вернуться", callback_data="return_to_main")]
+        ]
     )
     
     await send_message_and_save_id(
@@ -709,17 +726,17 @@ async def handle_edit_card_start(callback: types.CallbackQuery):
     cards = admin_card_editor.get_all_cards()
     
     # Создаем клавиатуру с картами (по 2 в ряд)
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    buttons = []
-    for card in cards:
-        buttons.append(InlineKeyboardButton(
-            card,
-            callback_data=f"select_card_{card}"
-        ))
-    keyboard.add(*buttons)
+    keyboard_rows = []
+    for i in range(0, len(cards), 2):
+        row = []
+        for card in cards[i:i+2]:
+            row.append(InlineKeyboardButton(text=card, callback_data=f"select_card_{card}"))
+        keyboard_rows.append(row)
     
     # Добавляем кнопку возврата
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="admin_menu"))
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_menu")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
     
     await callback.message.edit_text(
         "🎴 *Выберите карту для редактирования:*",
@@ -744,13 +761,12 @@ async def handle_card_selection(callback: types.CallbackQuery):
     edit_states[callback.from_user.id] = {"card": card_name}
     
     # Создаем клавиатуру с полями для редактирования
-    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard_rows = []
     for field in admin_card_editor.get_all_fields():
-        keyboard.add(InlineKeyboardButton(
-            f"📝 {field}",
-            callback_data=f"edit_field_{field}"
-        ))
-    keyboard.add(InlineKeyboardButton("🔙 Назад", callback_data="edit_card_start"))
+        keyboard_rows.append([InlineKeyboardButton(text=f"📝 {field}", callback_data=f"edit_field_{field}")])
+    keyboard_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="edit_card_start")])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
     
     # Формируем текст с текущими значениями
     text = f"🎴 *Карта: {card_name}*\n\n"
@@ -787,8 +803,8 @@ async def handle_field_selection(callback: types.CallbackQuery):
         "Отправьте новое значение для этого поля.\n"
         "Для отмены нажмите кнопку ниже.",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup().add(
-            InlineKeyboardButton("🔙 Отмена", callback_data=f"select_card_{user_state['card']}")
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔙 Отмена", callback_data=f"select_card_{user_state['card']}")]]
         )
     )
     
@@ -815,20 +831,19 @@ async def handle_new_value(message: types.Message):
         await message.reply(
             "✅ Значение успешно обновлено!\n\n"
             "Выберите следующее действие:",
-            reply_markup=InlineKeyboardMarkup(row_width=1).add(
-                InlineKeyboardButton("📝 Продолжить редактирование", 
-                                   callback_data=f"select_card_{user_state['card']}"),
-                InlineKeyboardButton("🔙 Вернуться в админ-меню", 
-                                   callback_data="admin_menu")
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="📝 Продолжить редактирование", callback_data=f"select_card_{user_state['card']}")],
+                    [InlineKeyboardButton(text="🔙 Вернуться в админ-меню", callback_data="admin_menu")]
+                ]
             )
         )
     else:
         await message.reply(
             "❌ Произошла ошибка при обновлении значения.\n"
             "Попробуйте еще раз или вернитесь в меню:",
-            reply_markup=InlineKeyboardMarkup().add(
-                InlineKeyboardButton("🔙 Вернуться", 
-                                   callback_data=f"select_card_{user_state['card']}")
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔙 Вернуться", callback_data=f"select_card_{user_state['card']}")]]
             )
         )
     
@@ -855,8 +870,8 @@ async def handle_admin_stats(callback: types.CallbackQuery):
         "└ _(Будет дополняться)_"
     )
     
-    keyboard = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("🔙 Назад", callback_data="admin_menu")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_menu")]]
     )
     
     await callback.message.edit_text(
@@ -872,11 +887,10 @@ async def handle_return_to_main(callback: types.CallbackQuery):
         return
 
     await callback.answer()
-    
+
     # Создаем объект message для использования в send_message_and_save_id
-    message = callback.message
-    message.from_user = callback.from_user
-    
+    message = SimpleMessage(callback)
+
     # Удаляем сообщение с админ-меню
     try:
         await callback.message.delete()
@@ -898,11 +912,12 @@ async def handle_admin_menu_callback(callback: types.CallbackQuery):
         await callback.answer("⛔️ Доступ запрещен")
         return
         
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton("📝 Редактировать карту", callback_data="edit_card_start"),
-        InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
-        InlineKeyboardButton("🔙 Вернуться", callback_data="return_to_main")
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Редактировать карту", callback_data="edit_card_start")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+            [InlineKeyboardButton(text="🔙 Вернуться", callback_data="return_to_main")]
+        ]
     )
     
     await callback.message.edit_text(
@@ -917,8 +932,9 @@ async def send_card_image(message: types.Message, card_info: dict):
     try:
         image_data = await image_manager.get_image(card_info['en'])
         if image_data:
+            photo = BufferedInputFile(image_data, filename=f"{card_info['en']}.jpg")
             await message.answer_photo(
-                photo=image_data,
+                photo=photo,
                 caption=f"🎴 {card_info['ru']}\n\n{card_info['meaning']}"
             )
         else:
@@ -949,18 +965,16 @@ async def cmd_stats(message: types.Message):
 async def handle_try_again(callback: types.CallbackQuery):
     """Обработчик кнопки 'Попробовать еще раз'."""
     # Создаем объект message из callback.message
-    message = callback.message
-    message.from_user = callback.from_user
-    
+    message = SimpleMessage(callback)
+
     # Запускаем новую игру
     await handle_guess_card_game(message)
 
 async def handle_return_to_menu(callback: types.CallbackQuery):
     """Обработчик кнопки 'Вернуться в меню'."""
     # Создаем объект message из callback.message
-    message = callback.message
-    message.from_user = callback.from_user
-    
+    message = SimpleMessage(callback)
+
     # Возвращаемся в главное меню
     await send_message_and_save_id(
         message,
@@ -986,44 +1000,40 @@ def register_handlers(dp: Dispatcher, log_decorator=None):
         log_decorator = lambda x: x
     
     # Основные команды
-    dp.register_message_handler(log_decorator(cmd_start), commands=['start'])
-    dp.register_message_handler(log_decorator(show_main_menu), commands=['menu'])
-    dp.register_message_handler(log_decorator(admin_menu), lambda msg: msg.text == "👑 Админ-панель")
-    dp.register_message_handler(log_decorator(settings_menu), lambda msg: msg.text == "⚙️ Настройки")
-    dp.register_message_handler(log_decorator(handle_theme), 
+    dp.message.register(log_decorator(cmd_start), Command(commands=['start']))
+    dp.message.register(log_decorator(show_main_menu), Command(commands=['menu']))
+    dp.message.register(log_decorator(admin_menu), lambda msg: msg.text == "👑 Админ-панель")
+    dp.message.register(log_decorator(settings_menu), lambda msg: msg.text == "⚙️ Настройки")
+    dp.message.register(log_decorator(handle_theme), 
                               lambda message: any(message.text.endswith(theme) for theme in 
                               ["💰 Финансы", "❤️ Отношения", "🌅 Карта дня", "💼 Карьера", 
                                "🌙 На месяц", "🌟 На неделю", "💫 Подсказка"]))
-    dp.register_message_handler(log_decorator(handle_card_choice), 
+    dp.message.register(log_decorator(handle_card_choice), 
                               lambda message: message.text == "🎴")
-    dp.register_message_handler(log_decorator(handle_history_request), lambda message: message.text == "📜 История карты")
-    dp.register_message_handler(log_decorator(handle_return_to_themes), lambda message: message.text in ["🔮 Новый расклад", "🔮 Вернуться к гаданию"])
-    dp.register_callback_query_handler(log_decorator(handle_settings_callback), lambda c: c.data in ["toggle_theme", "reset_settings"])
+    dp.message.register(log_decorator(handle_history_request), lambda message: message.text == "📜 История карты")
+    dp.message.register(log_decorator(handle_return_to_themes), lambda message: message.text in ["🔮 Новый расклад", "🔮 Вернуться к гаданию"])
+    dp.callback_query.register(log_decorator(handle_settings_callback), lambda c: c.data in ["toggle_theme", "reset_settings"])
     
     # Обработчики для игры
-    dp.register_message_handler(log_decorator(handle_guess_card_game), lambda m: m.text == "🎲 Угадай карту")
-    dp.register_callback_query_handler(log_decorator(handle_guess_callback), lambda c: c.data.startswith("guess_"))
-    dp.register_callback_query_handler(log_decorator(handle_try_again), lambda c: c.data == "try_again")
-    dp.register_callback_query_handler(log_decorator(handle_return_to_menu), lambda c: c.data == "return_to_menu")
+    dp.message.register(log_decorator(handle_guess_card_game), lambda m: m.text == "🎲 Угадай карту")
+    dp.callback_query.register(log_decorator(handle_guess_callback), lambda c: c.data.startswith("guess_"))
+    dp.callback_query.register(log_decorator(handle_try_again), lambda c: c.data == "try_again")
+    dp.callback_query.register(log_decorator(handle_return_to_menu), lambda c: c.data == "return_to_menu")
     
     # Админские хендлеры
-    dp.register_message_handler(log_decorator(admin_menu), commands=['admin'])
-    dp.register_callback_query_handler(log_decorator(handle_edit_card_start), lambda c: c.data == "edit_card_start")
-    dp.register_callback_query_handler(log_decorator(handle_card_selection), lambda c: c.data.startswith("select_card_"))
-    dp.register_callback_query_handler(log_decorator(handle_field_selection), lambda c: c.data.startswith("edit_field_"))
-    dp.register_callback_query_handler(log_decorator(handle_admin_stats), lambda c: c.data == "admin_stats")
-    dp.register_callback_query_handler(log_decorator(handle_admin_menu_callback), lambda c: c.data == "admin_menu")
-    dp.register_callback_query_handler(log_decorator(handle_return_to_main), lambda c: c.data == "return_to_main")
-    
-    # Обработчик возврата к главному меню
-    dp.register_message_handler(log_decorator(handle_return_to_themes), lambda msg: msg.text == "🔮 Новый расклад")
+    dp.message.register(log_decorator(admin_menu), Command(commands=['admin']))
+    dp.callback_query.register(log_decorator(handle_edit_card_start), lambda c: c.data == "edit_card_start")
+    dp.callback_query.register(log_decorator(handle_card_selection), lambda c: c.data.startswith("select_card_"))
+    dp.callback_query.register(log_decorator(handle_field_selection), lambda c: c.data.startswith("edit_field_"))
+    dp.callback_query.register(log_decorator(handle_admin_stats), lambda c: c.data == "admin_stats")
+    dp.callback_query.register(log_decorator(handle_admin_menu_callback), lambda c: c.data == "admin_menu")
+    dp.callback_query.register(log_decorator(handle_return_to_main), lambda c: c.data == "return_to_main")
     
     # Регистрируем хендлер статистики
-    dp.register_message_handler(
+    # Важно: в aiogram 3.x фильтры применяются в порядке передачи
+    # Сначала проверяем права админа, затем парсим команду
+    dp.message.register(
         log_decorator(cmd_stats),
         lambda message: message.from_user.id in ADMIN_IDS,
-        commands=['stats']
+        Command(commands=['stats'])
     )
-
-    # Обработчик кнопки 'Вернуться в меню'
-    dp.register_callback_query_handler(log_decorator(handle_return_to_menu), lambda c: c.data == "return_to_menu") 
